@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UAV Telemetry Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mqtt@4.3.7/dist/mqtt.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+        
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .status-bar {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ccc;
+            transition: background 0.3s ease;
+        }
+        
+        .status-dot.connected {
+            background: #10b981;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% {
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+            }
+            50% {
+                box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
+            }
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .stat-card {
+            background: #f3f4f6;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .dashboard {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin-bottom: 20px;
+        }
+        
+        .chart-title {
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .data-table {
+            width: 100%;
+            margin-top: 20px;
+            border-collapse: collapse;
+        }
+        
+        .data-table th {
+            background: #f3f4f6;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #666;
+            border-bottom: 2px solid #e5e7eb;
+        }
+        
+        .data-table td {
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+            color: #333;
+        }
+        
+        .data-table tr:hover {
+            background: #f9fafb;
+        }
+        
+        .debug-log {
+            background: #1f2937;
+            color: #10b981;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+            margin-top: 20px;
+        }
+        
+        .debug-log p {
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚁 UAV Telemetry Dashboard</h1>
+            <div class="status-bar">
+                <div class="status-item">
+                    <div class="status-dot" id="statusDot"></div>
+                    <span>Broker: <strong id="brokerStatus">Disconnected</strong></span>
+                </div>
+                <div class="status-item">
+                    Messages: <strong id="msgCount">0</strong>
+                </div>
+            </div>
+            <div class="stats">
+                <div class="stat-card">
+                    <div class="stat-label">Current Battery</div>
+                    <div class="stat-value" id="currentBattery">--%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Avg Battery</div>
+                    <div class="stat-value" id="avgBattery">--%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">CPU Usage</div>
+                    <div class="stat-value" id="cpuUsage">--%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Memory Usage</div>
+                    <div class="stat-value" id="memUsage">--%</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="dashboard">
+            <div class="chart-title">📊 Battery Level Over Time</div>
+            <div class="chart-container">
+                <canvas id="batteryChart"></canvas>
+            </div>
+
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Battery (%)</th>
+                        <th>CPU (%)</th>
+                        <th>Memory (%)</th>
+                        <th>Seq</th>
+                    </tr>
+                </thead>
+                <tbody id="dataTable">
+                    <tr>
+                        <td colspan="5" style="text-align: center; color: #999;">Waiting for data...</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="debug-log">
+                <p>[System] Dashboard initialized</p>
+                <p>[System] Attempting to connect to broker...</p>
+                <div id="debugLog"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Konfigurasi
+        const BROKER_URL = "wss://ef6ff411.ala.asia-southeast1.emqxsl.com:8084/mqtt";
+        const TOPIC = "uav/telemetry/crepes387";
+        const USERNAME = "user1";
+        const PASSWORD = "public1";
+        const MAX_DATA_POINTS = 60; // Simpan 60 data point terakhir
+
+        // State
+        let client = null;
+        let isConnected = false;
+        let dataPoints = [];
+        let messageCount = 0;
+        let chart = null;
+
+        // Debug Log
+        function addLog(message) {
+            const debugLog = document.getElementById("debugLog");
+            const timestamp = new Date().toLocaleTimeString();
+            const p = document.createElement("p");
+            p.textContent = `[${timestamp}] ${message}`;
+            debugLog.appendChild(p);
+            
+            // Keep only last 20 logs
+            while (debugLog.children.length > 20) {
+                debugLog.removeChild(debugLog.firstChild);
+            }
+            debugLog.parentElement.scrollTop = debugLog.parentElement.scrollHeight;
+        }
+
+        // Initialize Chart
+        function initChart() {
+            const ctx = document.getElementById("batteryChart").getContext("2d");
+            chart = new Chart(ctx, {
+                type: "line",
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: "Battery Level (%)",
+                            data: [],
+                            borderColor: "#667eea",
+                            backgroundColor: "rgba(102, 126, 234, 0.1)",
+                            borderWidth: 2,
+                            tension: 0.3,
+                            fill: true,
+                            pointRadius: 4,
+                            pointBackgroundColor: "#667eea",
+                            pointBorderColor: "#fff",
+                            pointBorderWidth: 2,
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: "top"
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            title: {
+                                display: true,
+                                text: "Battery %"
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: "Time"
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Update Chart
+        function updateChart() {
+            if (!chart) return;
+
+            chart.data.labels = dataPoints.map((p) => {
+                const date = new Date(p.ts * 1000);
+                return date.toLocaleTimeString();
+            });
+
+            chart.data.datasets[0].data = dataPoints.map((p) => p.battery);
+            chart.update();
+        }
+
+        // Update Table
+        function updateTable() {
+            const tbody = document.getElementById("dataTable");
+            tbody.innerHTML = "";
+
+            // Show last 10 entries
+            const recentData = dataPoints.slice(-10).reverse();
+
+            if (recentData.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #999;">No data yet</td></tr>';
+                return;
+            }
+
+            recentData.forEach((p) => {
+                const row = tbody.insertRow();
+                const date = new Date(p.ts * 1000);
+                row.innerHTML = `
+                    <td>${date.toLocaleString()}</td>
+                    <td><strong>${p.battery.toFixed(1)}</strong></td>
+                    <td>${p.cpu.toFixed(1)}</td>
+                    <td>${p.memory.toFixed(1)}</td>
+                    <td>${p.seq}</td>
+                `;
+            });
+        }
+
+        // Update Stats
+        function updateStats() {
+            if (dataPoints.length === 0) return;
+
+            const latest = dataPoints[dataPoints.length - 1];
+            document.getElementById("currentBattery").textContent = latest.battery.toFixed(1) + "%";
+            document.getElementById("cpuUsage").textContent = latest.cpu.toFixed(1) + "%";
+            document.getElementById("memUsage").textContent = latest.memory.toFixed(1) + "%";
+
+            const avgBattery = dataPoints.reduce((sum, p) => sum + p.battery, 0) / dataPoints.length;
+            document.getElementById("avgBattery").textContent = avgBattery.toFixed(1) + "%";
+
+            document.getElementById("msgCount").textContent = messageCount;
+        }
+
+        // Connect to Broker
+        function connectBroker() {
+            addLog("Connecting to EMQX Serverless...");
+
+            const options = {
+                username: USERNAME,
+                password: PASSWORD,
+                clientId: "dashboard_" + Math.random().toString(36).substr(2, 9),
+                clean: true,
+                reconnectPeriod: 5000,
+                connectTimeout: 10000,
+            };
+
+            client = mqtt.connect(BROKER_URL, options);
+
+            client.on("connect", () => {
+                isConnected = true;
+                addLog("✅ Connected to broker!");
+                document.getElementById("brokerStatus").textContent = "Connected";
+                document.getElementById("statusDot").classList.add("connected");
+                
+                // Subscribe ke topic
+                client.subscribe(TOPIC, (err) => {
+                    if (err) {
+                        addLog("❌ Subscribe failed: " + err.message);
+                    } else {
+                        addLog(`✅ Subscribed to topic: ${TOPIC}`);
+                    }
+                });
+            });
+
+            client.on("message", (topic, message) => {
+                try {
+                    const payload = JSON.parse(message.toString());
+                    messageCount++;
+
+                    // Extract data
+                    const dataPoint = {
+                        ts: payload.ts,
+                        battery: payload.battery,
+                        cpu: payload.system.cpu_percent,
+                        memory: payload.system.memory_percent,
+                        seq: payload.seq
+                    };
+
+                    dataPoints.push(dataPoint);
+
+                    // Keep only last MAX_DATA_POINTS
+                    if (dataPoints.length > MAX_DATA_POINTS) {
+                        dataPoints.shift();
+                    }
+
+                    addLog(`📨 [${payload.seq}] Battery: ${payload.battery.toFixed(1)}%, CPU: ${payload.system.cpu_percent.toFixed(1)}%`);
+
+                    // Update UI
+                    updateChart();
+                    updateTable();
+                    updateStats();
+
+                } catch (err) {
+                    addLog("❌ Error parsing message: " + err.message);
+                }
+            });
+
+            client.on("error", (err) => {
+                addLog("❌ Connection error: " + err.message);
+            });
+
+            client.on("offline", () => {
+                isConnected = false;
+                addLog("⚠️  Disconnected from broker");
+                document.getElementById("brokerStatus").textContent = "Disconnected";
+                document.getElementById("statusDot").classList.remove("connected");
+            });
+
+            client.on("reconnect", () => {
+                addLog("🔄 Attempting to reconnect...");
+            });
+        }
+
+        // Initialize
+        document.addEventListener("DOMContentLoaded", () => {
+            initChart();
+            connectBroker();
+        });
+    </script>
+</body>
+</html>
