@@ -1,1 +1,1 @@
-{"ts":1776792459.2868512,"battery":20,"system":{"cpu_percent":5.7,"memory_percent":50.9},"seq":124}
+{"ts":1776879552.0032232,"gps":{"latitude":0.0,"longitude":0.0,"altitude_msl":3.2900002002716064,"altitude_relative":3.2960002422332764,"satellite_count":0},"attitude":{"roll":5.714285850524902,"pitch":-0.28003254532814026,"yaw":-53.87680435180664},"velocity":{"x":0.0,"y":0.0,"z":0.0,"ground_speed":0.0},"battery":{"voltage_v":0,"current_a":null,"remaining_percent":0,"health":null},"status":{"armed":false,"flight_mode":"UNKNOWN","in_air":false,"is_connected":false},"seq":109}

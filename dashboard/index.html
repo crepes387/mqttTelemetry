@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>UAV Telemetry Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <title>Pixhawk Telemetry Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mqtt@4.3.7/dist/mqtt.min.js"></script>
     <style>
         * {
@@ -21,7 +21,7 @@
         }
         
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
         }
         
@@ -35,110 +35,153 @@
         
         .header h1 {
             color: #333;
-            margin-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 28px;
         }
         
-        .status-bar {
+        .status-indicators {
             display: flex;
-            gap: 20px;
-            align-items: center;
+            gap: 15px;
+            margin-bottom: 15px;
             flex-wrap: wrap;
         }
         
-        .status-item {
+        .indicator {
             display: flex;
             align-items: center;
             gap: 8px;
+            padding: 8px 12px;
+            background: #f3f4f6;
+            border-radius: 6px;
+            font-size: 14px;
         }
         
-        .status-dot {
-            width: 12px;
-            height: 12px;
+        .indicator-dot {
+            width: 10px;
+            height: 10px;
             border-radius: 50%;
-            background: #ccc;
+            background: #ef4444;
             transition: background 0.3s ease;
         }
         
-        .status-dot.connected {
+        .indicator-dot.active {
             background: #10b981;
-            animation: pulse 2s infinite;
+            animation: pulse 1s infinite;
         }
         
         @keyframes pulse {
-            0%, 100% {
-                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
-            }
-            50% {
-                box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
-            }
+            0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            50% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
         }
         
-        .stats {
+        .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 15px;
             margin-top: 15px;
         }
         
         .stat-card {
-            background: #f3f4f6;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
             padding: 15px;
             border-radius: 8px;
-            border-left: 4px solid #667eea;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
         
         .stat-label {
-            font-size: 12px;
-            color: #666;
+            font-size: 11px;
+            opacity: 0.8;
             text-transform: uppercase;
             margin-bottom: 5px;
         }
         
         .stat-value {
-            font-size: 24px;
+            font-size: 22px;
             font-weight: bold;
-            color: #333;
+        }
+        
+        .stat-unit {
+            font-size: 12px;
+            opacity: 0.8;
         }
         
         .dashboard {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .panel {
             background: white;
             padding: 20px;
             border-radius: 10px;
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
         
-        .chart-container {
-            position: relative;
-            height: 400px;
-            margin-bottom: 20px;
-        }
-        
-        .chart-title {
+        .panel-title {
             font-size: 16px;
             font-weight: bold;
             color: #333;
-            margin-bottom: 10px;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 300px;
+            margin-bottom: 15px;
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        
+        .info-item {
+            background: #f9fafb;
+            padding: 10px;
+            border-radius: 6px;
+            border-left: 3px solid #667eea;
+        }
+        
+        .info-label {
+            font-size: 11px;
+            color: #666;
+            text-transform: uppercase;
+            margin-bottom: 3px;
+        }
+        
+        .info-value {
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
         }
         
         .data-table {
             width: 100%;
-            margin-top: 20px;
             border-collapse: collapse;
+            margin-top: 15px;
         }
         
         .data-table th {
             background: #f3f4f6;
-            padding: 12px;
+            padding: 10px;
             text-align: left;
             font-weight: 600;
             color: #666;
+            font-size: 12px;
             border-bottom: 2px solid #e5e7eb;
         }
         
         .data-table td {
-            padding: 12px;
+            padding: 10px;
             border-bottom: 1px solid #e5e7eb;
             color: #333;
+            font-size: 13px;
         }
         
         .data-table tr:hover {
@@ -152,219 +195,358 @@
             border-radius: 8px;
             font-family: 'Courier New', monospace;
             font-size: 12px;
-            max-height: 200px;
+            max-height: 150px;
             overflow-y: auto;
             margin-top: 20px;
         }
         
         .debug-log p {
-            margin: 5px 0;
+            margin: 3px 0;
+        }
+        
+        @media (max-width: 1024px) {
+            .dashboard {
+                grid-template-columns: 1fr;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🚁 UAV Telemetry Dashboard</h1>
-            <div class="status-bar">
-                <div class="status-item">
-                    <div class="status-dot" id="statusDot"></div>
+            <h1>🚁 Pixhawk Real-Time Telemetry Dashboard</h1>
+            
+            <div class="status-indicators">
+                <div class="indicator">
+                    <div class="indicator-dot" id="indicatorBroker"></div>
                     <span>Broker: <strong id="brokerStatus">Disconnected</strong></span>
                 </div>
-                <div class="status-item">
-                    Messages: <strong id="msgCount">0</strong>
+                <div class="indicator">
+                    <div class="indicator-dot" id="indicatorArmed"></div>
+                    <span>Armed: <strong id="armedStatus">No</strong></span>
+                </div>
+                <div class="indicator">
+                    <div class="indicator-dot" id="indicatorInAir"></div>
+                    <span>In Air: <strong id="inAirStatus">No</strong></span>
+                </div>
+                <div class="indicator">
+                    <span>Flight Mode: <strong id="flightMode">--</strong></span>
+                </div>
+                <div class="indicator">
+                    <span>Messages: <strong id="msgCount">0</strong></span>
                 </div>
             </div>
-            <div class="stats">
+            
+            <div class="stats-grid">
                 <div class="stat-card">
-                    <div class="stat-label">Current Battery</div>
-                    <div class="stat-value" id="currentBattery">--%</div>
+                    <div class="stat-label">Battery</div>
+                    <div class="stat-value" id="batteryPercent">--%</div>
+                    <div class="stat-unit" id="batteryVoltage">-- V</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">Avg Battery</div>
-                    <div class="stat-value" id="avgBattery">--%</div>
+                    <div class="stat-label">Altitude</div>
+                    <div class="stat-value" id="altitude">-- m</div>
+                    <div class="stat-unit" id="altitudeRel">Rel: -- m</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">CPU Usage</div>
-                    <div class="stat-value" id="cpuUsage">--%</div>
+                    <div class="stat-label">Ground Speed</div>
+                    <div class="stat-value" id="groundSpeed">-- m/s</div>
+                    <div class="stat-unit" id="groundSpeedKmh">-- km/h</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">Memory Usage</div>
-                    <div class="stat-value" id="memUsage">--%</div>
+                    <div class="stat-label">GPS Sats</div>
+                    <div class="stat-value" id="satellites">--</div>
+                    <div class="stat-unit">Satellites</div>
                 </div>
             </div>
         </div>
 
         <div class="dashboard">
-            <div class="chart-title">📊 Battery Level Over Time</div>
-            <div class="chart-container">
-                <canvas id="batteryChart"></canvas>
+            <!-- Left Column -->
+            <div>
+                <div class="panel">
+                    <div class="panel-title">📊 Battery Over Time</div>
+                    <div class="chart-container">
+                        <canvas id="batteryChart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="panel">
+                    <div class="panel-title">🎯 Attitude (Roll/Pitch/Yaw)</div>
+                    <div class="chart-container">
+                        <canvas id="attitudeChart"></canvas>
+                    </div>
+                </div>
             </div>
 
+            <!-- Right Column -->
+            <div>
+                <div class="panel">
+                    <div class="panel-title">📍 GPS Data</div>
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">Latitude</div>
+                            <div class="info-value" id="latitude">--</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Longitude</div>
+                            <div class="info-value" id="longitude">--</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Altitude (MSL)</div>
+                            <div class="info-value" id="altitudeMSL">-- m</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Altitude (Rel)</div>
+                            <div class="info-value" id="altitudeREL">-- m</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-title">⚡ Battery Details</div>
+                    <div class="info-grid">
+                        <div class="info-item">
+                            <div class="info-label">Percentage</div>
+                            <div class="info-value" id="battPct">--%</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Voltage</div>
+                            <div class="info-value" id="battVolt">-- V</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Current</div>
+                            <div class="info-value" id="battCurrent">-- A</div>
+                        </div>
+                        <div class="info-item">
+                            <div class="info-label">Health</div>
+                            <div class="info-value" id="battHealth">--%</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-title">📋 Flight Data Log</div>
             <table class="data-table">
                 <thead>
                     <tr>
-                        <th>Timestamp</th>
-                        <th>Battery (%)</th>
-                        <th>CPU (%)</th>
-                        <th>Memory (%)</th>
                         <th>Seq</th>
+                        <th>Time</th>
+                        <th>Lat/Lon</th>
+                        <th>Alt (m)</th>
+                        <th>Spd (m/s)</th>
+                        <th>Roll/Pitch/Yaw</th>
+                        <th>Battery (%)</th>
+                        <th>Status</th>
                     </tr>
                 </thead>
                 <tbody id="dataTable">
                     <tr>
-                        <td colspan="5" style="text-align: center; color: #999;">Waiting for data...</td>
+                        <td colspan="8" style="text-align: center; color: #999;">Waiting for telemetry data...</td>
                     </tr>
                 </tbody>
             </table>
+        </div>
 
-            <div class="debug-log">
-                <p>[System] Dashboard initialized</p>
-                <p>[System] Attempting to connect to broker...</p>
-                <div id="debugLog"></div>
-            </div>
+        <div class="debug-log">
+            <p style="color: #60a5fa;">[System] Dashboard initialized</p>
+            <p style="color: #60a5fa;">[System] Connecting to MQTT broker...</p>
+            <div id="debugLog"></div>
         </div>
     </div>
 
     <script>
-        // Konfigurasi
+        // Configuration
         const BROKER_URL = "wss://ef6ff411.ala.asia-southeast1.emqxsl.com:8084/mqtt";
         const TOPIC = "uav/telemetry/crepes387";
         const USERNAME = "user1";
         const PASSWORD = "public1";
-        const MAX_DATA_POINTS = 60; // Simpan 60 data point terakhir
+        const MAX_DATA_POINTS = 100;
 
         // State
         let client = null;
         let isConnected = false;
         let dataPoints = [];
         let messageCount = 0;
-        let chart = null;
+        let batteryChart = null;
+        let attitudeChart = null;
 
-        // Debug Log
+        // Add debug log
         function addLog(message) {
             const debugLog = document.getElementById("debugLog");
-            const timestamp = new Date().toLocaleTimeString();
             const p = document.createElement("p");
-            p.textContent = `[${timestamp}] ${message}`;
+            p.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
             debugLog.appendChild(p);
             
-            // Keep only last 20 logs
-            while (debugLog.children.length > 20) {
+            while (debugLog.children.length > 15) {
                 debugLog.removeChild(debugLog.firstChild);
             }
             debugLog.parentElement.scrollTop = debugLog.parentElement.scrollHeight;
         }
 
-        // Initialize Chart
-        function initChart() {
-            const ctx = document.getElementById("batteryChart").getContext("2d");
-            chart = new Chart(ctx, {
+        // Initialize charts
+        function initCharts() {
+            // Battery chart
+            const ctxBatt = document.getElementById("batteryChart").getContext("2d");
+            batteryChart = new Chart(ctxBatt, {
+                type: "line",
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: "Battery %",
+                        data: [],
+                        borderColor: "#ef4444",
+                        backgroundColor: "rgba(239, 68, 68, 0.1)",
+                        borderWidth: 2,
+                        tension: 0.3,
+                        fill: true,
+                        pointRadius: 3,
+                        pointBackgroundColor: "#ef4444"
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: true } },
+                    scales: {
+                        y: { beginAtZero: true, max: 100 }
+                    }
+                }
+            });
+
+            // Attitude chart
+            const ctxAtt = document.getElementById("attitudeChart").getContext("2d");
+            attitudeChart = new Chart(ctxAtt, {
                 type: "line",
                 data: {
                     labels: [],
                     datasets: [
                         {
-                            label: "Battery Level (%)",
+                            label: "Roll (°)",
                             data: [],
-                            borderColor: "#667eea",
-                            backgroundColor: "rgba(102, 126, 234, 0.1)",
+                            borderColor: "#3b82f6",
                             borderWidth: 2,
                             tension: 0.3,
-                            fill: true,
-                            pointRadius: 4,
-                            pointBackgroundColor: "#667eea",
-                            pointBorderColor: "#fff",
-                            pointBorderWidth: 2,
+                            pointRadius: 2,
+                            fill: false
+                        },
+                        {
+                            label: "Pitch (°)",
+                            data: [],
+                            borderColor: "#10b981",
+                            borderWidth: 2,
+                            tension: 0.3,
+                            pointRadius: 2,
+                            fill: false
+                        },
+                        {
+                            label: "Yaw (°)",
+                            data: [],
+                            borderColor: "#f59e0b",
+                            borderWidth: 2,
+                            tension: 0.3,
+                            pointRadius: 2,
+                            fill: false
                         }
                     ]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            display: true,
-                            position: "top"
-                        }
-                    },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            max: 100,
-                            title: {
-                                display: true,
-                                text: "Battery %"
-                            }
-                        },
-                        x: {
-                            title: {
-                                display: true,
-                                text: "Time"
-                            }
-                        }
-                    }
+                    plugins: { legend: { display: true } },
+                    scales: { y: { beginAtZero: true } }
                 }
             });
         }
 
-        // Update Chart
-        function updateChart() {
-            if (!chart) return;
+        // Update UI with latest data
+        function updateUI() {
+            if (dataPoints.length === 0) return;
 
-            chart.data.labels = dataPoints.map((p) => {
-                const date = new Date(p.ts * 1000);
-                return date.toLocaleTimeString();
-            });
+            const latest = dataPoints[dataPoints.length - 1];
 
-            chart.data.datasets[0].data = dataPoints.map((p) => p.battery);
-            chart.update();
+            // Status indicators
+            document.getElementById("armedStatus").textContent = latest.status.armed ? "Yes" : "No";
+            document.getElementById("inAirStatus").textContent = latest.status.in_air ? "Yes" : "No";
+            document.getElementById("flightMode").textContent = latest.status.flight_mode;
+            
+            const armedDot = document.getElementById("indicatorArmed");
+            const inAirDot = document.getElementById("indicatorInAir");
+            latest.status.armed ? armedDot.classList.add("active") : armedDot.classList.remove("active");
+            latest.status.in_air ? inAirDot.classList.add("active") : inAirDot.classList.remove("active");
+
+            // Stats cards
+            document.getElementById("batteryPercent").textContent = latest.battery.remaining_percent.toFixed(1) + "%";
+            document.getElementById("batteryVoltage").textContent = (latest.battery.voltage_v || 0).toFixed(2) + " V";
+            document.getElementById("altitude").textContent = latest.gps.altitude_msl.toFixed(1);
+            document.getElementById("altitudeRel").textContent = "Rel: " + latest.gps.altitude_relative.toFixed(1) + " m";
+            document.getElementById("groundSpeed").textContent = latest.velocity.ground_speed.toFixed(2);
+            document.getElementById("groundSpeedKmh").textContent = (latest.velocity.ground_speed * 3.6).toFixed(1) + " km/h";
+            document.getElementById("satellites").textContent = latest.gps.satellite_count;
+
+            // GPS panel
+            document.getElementById("latitude").textContent = latest.gps.latitude.toFixed(6);
+            document.getElementById("longitude").textContent = latest.gps.longitude.toFixed(6);
+            document.getElementById("altitudeMSL").textContent = latest.gps.altitude_msl.toFixed(2) + " m";
+            document.getElementById("altitudeREL").textContent = latest.gps.altitude_relative.toFixed(2) + " m";
+
+            // Battery panel
+            document.getElementById("battPct").textContent = latest.battery.remaining_percent.toFixed(1) + "%";
+            document.getElementById("battVolt").textContent = (latest.battery.voltage_v || 0).toFixed(2) + " V";
+            document.getElementById("battCurrent").textContent = (latest.battery.current_a || 0).toFixed(2) + " A";
+            document.getElementById("battHealth").textContent = (latest.battery.health || 0).toFixed(1) + "%";
+
+            // Update charts
+            updateCharts();
+            updateTable();
         }
 
-        // Update Table
+        // Update charts
+        function updateCharts() {
+            if (!batteryChart || !attitudeChart) return;
+
+            batteryChart.data.labels = dataPoints.map((p, i) => i % 10 === 0 ? new Date(p.timestamp * 1000).toLocaleTimeString() : "");
+            batteryChart.data.datasets[0].data = dataPoints.map(p => p.battery.remaining_percent);
+            batteryChart.update("none");
+
+            attitudeChart.data.labels = dataPoints.map((p, i) => i % 10 === 0 ? new Date(p.timestamp * 1000).toLocaleTimeString() : "");
+            attitudeChart.data.datasets[0].data = dataPoints.map(p => p.attitude.roll);
+            attitudeChart.data.datasets[1].data = dataPoints.map(p => p.attitude.pitch);
+            attitudeChart.data.datasets[2].data = dataPoints.map(p => p.attitude.yaw);
+            attitudeChart.update("none");
+        }
+
+        // Update table
         function updateTable() {
             const tbody = document.getElementById("dataTable");
             tbody.innerHTML = "";
 
-            // Show last 10 entries
             const recentData = dataPoints.slice(-10).reverse();
-
             if (recentData.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #999;">No data yet</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #999;">No data</td></tr>';
                 return;
             }
 
             recentData.forEach((p) => {
                 const row = tbody.insertRow();
-                const date = new Date(p.ts * 1000);
                 row.innerHTML = `
-                    <td>${date.toLocaleString()}</td>
-                    <td><strong>${p.battery.toFixed(1)}</strong></td>
-                    <td>${p.cpu.toFixed(1)}</td>
-                    <td>${p.memory.toFixed(1)}</td>
-                    <td>${p.seq}</td>
+                    <td>${p.sequence}</td>
+                    <td>${new Date(p.timestamp * 1000).toLocaleTimeString()}</td>
+                    <td>${p.gps.latitude.toFixed(4)}, ${p.gps.longitude.toFixed(4)}</td>
+                    <td>${p.gps.altitude_msl.toFixed(1)}</td>
+                    <td>${p.velocity.ground_speed.toFixed(2)}</td>
+                    <td>${p.attitude.roll.toFixed(1)}° / ${p.attitude.pitch.toFixed(1)}° / ${p.attitude.yaw.toFixed(1)}°</td>
+                    <td><strong>${p.battery.remaining_percent.toFixed(1)}</strong></td>
+                    <td>${p.status.armed ? "🔴 Armed" : "⚫ Disarmed"} ${p.status.in_air ? "🛫" : ""}</td>
                 `;
             });
         }
 
-        // Update Stats
-        function updateStats() {
-            if (dataPoints.length === 0) return;
-
-            const latest = dataPoints[dataPoints.length - 1];
-            document.getElementById("currentBattery").textContent = latest.battery.toFixed(1) + "%";
-            document.getElementById("cpuUsage").textContent = latest.cpu.toFixed(1) + "%";
-            document.getElementById("memUsage").textContent = latest.memory.toFixed(1) + "%";
-
-            const avgBattery = dataPoints.reduce((sum, p) => sum + p.battery, 0) / dataPoints.length;
-            document.getElementById("avgBattery").textContent = avgBattery.toFixed(1) + "%";
-
-            document.getElementById("msgCount").textContent = messageCount;
-        }
-
-        // Connect to Broker
+        // Connect to MQTT
         function connectBroker() {
-            addLog("Connecting to EMQX Serverless...");
+            addLog("Connecting to MQTT broker...");
 
             const options = {
                 username: USERNAME,
@@ -379,16 +561,13 @@
 
             client.on("connect", () => {
                 isConnected = true;
-                addLog("✅ Connected to broker!");
+                addLog("✅ Connected to MQTT!");
                 document.getElementById("brokerStatus").textContent = "Connected";
-                document.getElementById("statusDot").classList.add("connected");
+                document.getElementById("indicatorBroker").classList.add("active");
                 
-                // Subscribe ke topic
                 client.subscribe(TOPIC, (err) => {
-                    if (err) {
-                        addLog("❌ Subscribe failed: " + err.message);
-                    } else {
-                        addLog(`✅ Subscribed to topic: ${TOPIC}`);
+                    if (!err) {
+                        addLog(`✅ Subscribed to: ${TOPIC}`);
                     }
                 });
             });
@@ -397,54 +576,40 @@
                 try {
                     const payload = JSON.parse(message.toString());
                     messageCount++;
+                    document.getElementById("msgCount").textContent = messageCount;
 
-                    // Extract data
-                    const dataPoint = {
-                        ts: payload.ts,
-                        battery: payload.battery,
-                        cpu: payload.system.cpu_percent,
-                        memory: payload.system.memory_percent,
-                        seq: payload.seq
-                    };
-
-                    dataPoints.push(dataPoint);
-
-                    // Keep only last MAX_DATA_POINTS
+                    dataPoints.push(payload);
                     if (dataPoints.length > MAX_DATA_POINTS) {
                         dataPoints.shift();
                     }
 
-                    addLog(`📨 [${payload.seq}] Battery: ${payload.battery.toFixed(1)}%, CPU: ${payload.system.cpu_percent.toFixed(1)}%`);
-
-                    // Update UI
-                    updateChart();
-                    updateTable();
-                    updateStats();
+                    addLog(`📨 [${payload.seq}] Battery: ${payload.battery.remaining_percent.toFixed(1)}% | Alt: ${payload.gps.altitude_msl.toFixed(1)}m`);
+                    updateUI();
 
                 } catch (err) {
-                    addLog("❌ Error parsing message: " + err.message);
+                    addLog(`❌ Parse error: ${err.message}`);
                 }
             });
 
             client.on("error", (err) => {
-                addLog("❌ Connection error: " + err.message);
+                addLog(`❌ Error: ${err.message}`);
             });
 
             client.on("offline", () => {
                 isConnected = false;
-                addLog("⚠️  Disconnected from broker");
+                addLog("⚠️ Disconnected");
                 document.getElementById("brokerStatus").textContent = "Disconnected";
-                document.getElementById("statusDot").classList.remove("connected");
+                document.getElementById("indicatorBroker").classList.remove("active");
             });
 
             client.on("reconnect", () => {
-                addLog("🔄 Attempting to reconnect...");
+                addLog("🔄 Reconnecting...");
             });
         }
 
         // Initialize
         document.addEventListener("DOMContentLoaded", () => {
-            initChart();
+            initCharts();
             connectBroker();
         });
     </script>
