@@ -1,14 +1,15 @@
-import asyncio
-import paho.mqtt.client as mqtt
-from paho.mqtt.client import CallbackAPIVersion
-from mavsdk import System
-import json
+import asyncio #fungsi asinkron
+import paho.mqtt.client as mqtt #eclipse paho
+from paho.mqtt.client import CallbackAPIVersion #callbackapi versi 2
+from mavsdk import System #mengambil data dari pixhawk
+import json 
 import os
 import time
-from pathlib import Path
-from dataclasses import dataclass, asdict
-from typing import Optional
-import logging
+from datetime import datetime #untuk format timestamp ISO
+from pathlib import Path #konfigurasi path
+from dataclasses import dataclass, asdict #konfigurasi class
+from typing import Optional #bila data none
+import logging #tampilan terminal
 
 # Setup logging
 logging.basicConfig(
@@ -29,7 +30,6 @@ class GPSData:
     altitude_msl: float
     altitude_relative: float
     satellite_count: int
-
 
 @dataclass
 class AttitudeData:
@@ -66,7 +66,7 @@ class StatusData:
     is_connected: bool
 
 
-@dataclass
+@dataclass #jadikan satu class data 
 class PixhawkTelemetry:
     """Complete telemetry payload"""
     timestamp: float
@@ -91,20 +91,31 @@ class PixhawkReader:
         self.is_connected = False
         self.sequence = 0
         
-        # Cache latest telemetry
-        self.latest_gps: Optional[GPSData] = None
-        self.latest_attitude: Optional[AttitudeData] = None
-        self.latest_velocity: Optional[VelocityData] = None
-        self.latest_battery: Optional[BatteryData] = None
-        self.latest_status: Optional[StatusData] = None
+        # Cache latest telemetry - initialize dengan default values untuk menghindari None
+        self.latest_gps = GPSData(
+            latitude=0.0,
+            longitude=0.0,
+            altitude_msl=0.0,
+            altitude_relative=0.0,
+            satellite_count=0
+        )
+        self.latest_attitude = AttitudeData(roll=0.0, pitch=0.0, yaw=0.0)
+        self.latest_velocity = VelocityData(x=0.0, y=0.0, z=0.0, ground_speed=0.0)
+        self.latest_battery = BatteryData(voltage_v=0.0, current_a=None, remaining_percent=0.0, health=None)
+        self.latest_status = StatusData(
+            armed=False,
+            flight_mode="UNKNOWN",
+            in_air=False,
+            is_connected=False
+        )
     
-    async def connect(self) -> bool:
+    async def connect(self) -> bool: #connect pixhawk return boolean
         """Connect ke Pixhawk"""
         try:
             logger.info(f"🔗 Connecting ke Pixhawk: {self.connection_url}")
-            await self.drone.connect(system_address=self.connection_url)
+            await self.drone.connect(system_address=self.connection_url) #system connect ke url (await)
             
-            async for state in self.drone.core.connection_state():
+            async for state in self.drone.core.connection_state(): #notif jika pixhawk connect
                 if state.is_connected:
                     logger.info("✅ Connected to Pixhawk!")
                     self.is_connected = True
@@ -119,24 +130,26 @@ class PixhawkReader:
         """Disconnect dari Pixhawk"""
         logger.info("🛑 Disconnecting from Pixhawk...")
     
-    async def read_telemetry(self) -> PixhawkTelemetry:
+    async def read_telemetry(self) -> PixhawkTelemetry: #mengambil data pixhawk output data
         """Baca semua telemetry data dari Pixhawk"""
         
-        if not self.is_connected:
+        if not self.is_connected: #jika tidak connect
             raise RuntimeError("Not connected to Pixhawk!")
         
-        telemetry = PixhawkTelemetry(
-            timestamp=time.time(),
-            gps=self.latest_gps or GPSData(0, 0, 0, 0, 0),
-            attitude=self.latest_attitude or AttitudeData(0, 0, 0),
-            velocity=self.latest_velocity or VelocityData(0, 0, 0, 0),
-            battery=self.latest_battery or BatteryData(0, None, 0, None),
-            status=self.latest_status or StatusData(False, "UNKNOWN", False, False),
+        telemetry = PixhawkTelemetry( #pembuatan payload
+            timestamp=datetime.utcnow().isoformat() + "Z",  # Format ISO 8601 biar readable di dashboard
+            gps=self.latest_gps,
+            attitude=self.latest_attitude,
+            velocity=self.latest_velocity,
+            battery=self.latest_battery,
+            status=self.latest_status,
             sequence=self.sequence
         )
         
         self.sequence += 1
         return telemetry
+    
+    #proses pengambilan data 
     
     async def start_telemetry_streams(self):
         """Start background telemetry streams"""
@@ -154,7 +167,7 @@ class PixhawkReader:
     async def _stream_position(self):
         """Subscribe ke position stream"""
         try:
-            async for position in self.drone.telemetry.position():
+            async for position in self.drone.telemetry.position(): #streamline data posisi 
                 self.latest_gps = GPSData(
                     latitude=position.latitude_deg,
                     longitude=position.longitude_deg,
@@ -195,11 +208,16 @@ class PixhawkReader:
         """Subscribe ke battery stream"""
         try:
             async for battery in self.drone.telemetry.battery():
+                logger.info(f"🔋 Battery received: {battery.voltage_v}V, {battery.remaining_percent}%")
+                # Handle missing attributes gracefully
+                current_a = getattr(battery, 'current_a', None) or getattr(battery, 'current_ampere', None)
+                health = getattr(battery, 'health_percent', None)
+                
                 self.latest_battery = BatteryData(
                     voltage_v=battery.voltage_v,
-                    current_a=battery.current_a,
+                    current_a=current_a,
                     remaining_percent=battery.remaining_percent,
-                    health=battery.health_percent
+                    health=health
                 )
         except Exception as e:
             logger.error(f"Battery stream error: {e}")
@@ -219,8 +237,7 @@ class PixhawkReader:
         """Monitor armed status"""
         try:
             async for armed in self.drone.telemetry.armed():
-                if self.latest_status:
-                    self.latest_status.armed = armed
+                self.latest_status.armed = armed
         except Exception as e:
             logger.error(f"Armed status error: {e}")
     
@@ -228,8 +245,7 @@ class PixhawkReader:
         """Monitor flight mode"""
         try:
             async for flight_mode in self.drone.telemetry.flight_mode():
-                if self.latest_status:
-                    self.latest_status.flight_mode = str(flight_mode)
+                self.latest_status.flight_mode = str(flight_mode)
         except Exception as e:
             logger.error(f"Flight mode error: {e}")
     
@@ -237,15 +253,8 @@ class PixhawkReader:
         """Monitor in-air status"""
         try:
             async for in_air in self.drone.telemetry.in_air():
-                if self.latest_status:
-                    self.latest_status.in_air = in_air
-                else:
-                    self.latest_status = StatusData(
-                        armed=False,
-                        flight_mode="UNKNOWN",
-                        in_air=in_air,
-                        is_connected=self.is_connected
-                    )
+                self.latest_status.in_air = in_air
+                self.latest_status.is_connected = self.is_connected
         except Exception as e:
             logger.error(f"In-air status error: {e}")
 
@@ -278,7 +287,7 @@ class MQTTPublisher:
             self.client.on_disconnect = self._on_disconnect
             self.client.on_publish = self._on_publish
             
-            cert_path = Path(__file__).resolve().parent / "emqxsl-ca.crt"
+            cert_path = Path(__file__).resolve().parent / "emqxsl-ca.crt" #output path file emqxsl-ca.crt
             if cert_path.exists():
                 try:
                     self.client.tls_set(ca_certs=str(cert_path))
@@ -289,10 +298,10 @@ class MQTTPublisher:
                     self.client.tls_insecure_set(True)
             else:
                 self.client.tls_set()
-                self.client.tls_insecure_set(True)
+                self.client.tls_insecure_set(True) 
             
             self.client.username_pw_set(self.username, self.password)
-            self.client.max_inflight_messages_set(5)
+            self.client.max_inflight_messages_set(5) #membatasi pesan qos 1 dan 2
             
             return True
             
@@ -305,7 +314,7 @@ class MQTTPublisher:
         try:
             logger.info(f"🔗 Connecting to MQTT: {self.broker_address}:{self.port}")
             self.client.connect(self.broker_address, self.port, keepalive=15)
-            self.client.loop_start()
+            self.client.loop_start() #start loop mqtt untuk proses background
             return True
         except Exception as e:
             logger.error(f"MQTT connection failed: {e}")
@@ -396,11 +405,11 @@ class TelemPublisher:
         self.mqtt_topic = os.getenv("MQTT_TOPIC", "uav/telemetry/crepes387")
         self.publish_interval = float(os.getenv("PUBLISH_INTERVAL", "0.5"))
         
-        default_output = Path(__file__).resolve().parent.parent / "data" / "latest.json"
-        self.output_file = Path(os.getenv("TELEMETRY_OUTPUT_FILE", str(default_output)))
-        self.output_file.parent.mkdir(parents=True, exist_ok=True)
+        default_output = Path(__file__).resolve().parent.parent / "data" / "latest.json"  #default data latest
+        self.output_file = Path(os.getenv("TELEMETRY_OUTPUT_FILE", str(default_output))) #bila tidak ada export telemetry maka default ke data\json
+        self.output_file.parent.mkdir(parents=True, exist_ok=True) #membuat folder/file dari path jika tidak terdeteksi
         
-        self.pixhawk = PixhawkReader(self.pixhawk_connection)
+        self.pixhawk = PixhawkReader(self.pixhawk_connection) #pemanggilan class pixhawkreader dengan parameter url
         self.mqtt = MQTTPublisher(
             self.mqtt_broker,
             self.mqtt_port,
@@ -427,7 +436,7 @@ class TelemPublisher:
             
             logger.info("🚀 Starting telemetry collection...")
             
-            telemetry_task = asyncio.create_task(self.pixhawk.start_telemetry_streams())
+            telemetry_task = asyncio.create_task(self.pixhawk.start_telemetry_streams()) #mengambil data telemetry secara background
             
             try:
                 while True:
