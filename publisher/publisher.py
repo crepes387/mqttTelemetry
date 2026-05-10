@@ -397,7 +397,7 @@ class TelemPublisher:
     """Main application - koordinate Pixhawk reader + MQTT publisher"""
     
     def __init__(self):
-        self.pixhawk_connection = os.getenv("PIXHAWK_CONNECTION", "udpin://:14540")
+        self.pixhawk_connection = os.getenv("PIXHAWK_CONNECTION", "udpin://127.0.0.1:14540")
         self.mqtt_broker = os.getenv("MQTT_BROKER", "ef6ff411.ala.asia-southeast1.emqxsl.com")
         self.mqtt_port = int(os.getenv("MQTT_PORT", "8883"))
         self.mqtt_username = os.getenv("MQTT_USERNAME", "user1")

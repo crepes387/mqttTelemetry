@@ -1,0 +1,3 @@
+MAVProxy>=1.8.60
+pymavlink>=2.4.40
+paho-mqtt>=1.7.1
