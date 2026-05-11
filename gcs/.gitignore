@@ -1,9 +1,8 @@
 # Virtual Environments
-publishenv/
+gcsenv/
 venv/
 env/
 .venv/
-ENV/
 
 # Python
 __pycache__/
@@ -16,16 +15,9 @@ __pycache__/
 .idea/
 *.swp
 
-# Data & Logs
-*.log
-*.json
-
 # OS
 .DS_Store
 
 # Environment
 .env
 .env.local
-*.pem
-*.crt
-emqxsl-ca.crt
