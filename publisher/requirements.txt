@@ -14,7 +14,7 @@ flake8             >=7.3.0
 fonttools          >=4.59.1
 future             >=1.0.0
 geocoder           >=1.38.1
-gnureadline        >=8.2.13
+pyreadline3        
 idna               >=3.10
 intelhex           >=2.3.0
 junitparser        >=4.0.2

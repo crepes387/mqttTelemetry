@@ -7,6 +7,7 @@ import asyncio
 import json
 import socket
 import logging
+import os
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, asdict
@@ -388,7 +389,6 @@ class MAVLinkMQTTBridge:
         self.mavlink_listen_port = int(os.getenv("MAVLINK_LISTEN_PORT", "14551"))
         
         # MQTT config (dari environment)
-        import os
         self.mqtt_broker = os.getenv("MQTT_BROKER", "ef6ff411.ala.asia-southeast1.emqxsl.com")
         self.mqtt_port = int(os.getenv("MQTT_PORT", "8883"))
         self.mqtt_username = os.getenv("MQTT_USERNAME", "user1")

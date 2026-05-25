@@ -196,7 +196,7 @@ class MAVLinkServer:
         self.listen_port = listen_port
         self.server = None
         self.clients = set()
-        self.mavlink = mavlink_module.MAVLink(None, check_length=False)
+        self.mavlink = mavlink_module.MAVLink(None)
         self.system_id = 1
         self.component_id = 1
         self.sequence = 0
