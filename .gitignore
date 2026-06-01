@@ -1,10 +1,12 @@
 # Virtual Environments
+mqttenv/
 publishenv/
 gcsenv/
 venv/
 env/
 .venv/
 ENV/
+*.venv
 
 # Python
 __pycache__/
@@ -43,7 +45,10 @@ MANIFEST
 *.log
 *.json
 !requirements*.txt
+!package.json
 data/latest.json
+mav.tlog
+mav.parm
 
 # Environment files
 .env
@@ -51,3 +56,9 @@ data/latest.json
 *.pem
 *.crt
 emqxsl-ca.crt
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*~
