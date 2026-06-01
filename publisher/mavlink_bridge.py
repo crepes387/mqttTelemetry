@@ -21,7 +21,7 @@ from pymavlink.dialects.v10 import ardupilotmega as mavlink_module
 
 # Setup logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # ✅ UBAH KE DEBUG UNTUK MELIHAT SEMUA MESSAGES
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -130,110 +130,170 @@ class MAVLinkListener:
         
         self.running = True
         logger.info("🚀 Starting MAVLink listener...")
+        logger.info(f"🔔 WAITING FOR UDP DATA ON PORT {self.listen_port}...")
+        logger.info(f"💡 Make sure MAVProxy is sending to this port with: --out=127.0.0.1:{self.listen_port} or similar")
+        
+        packet_count = 0
+        timeout_count = 0
         
         while self.running:
             try:
                 data, addr = self.socket.recvfrom(1024)
                 if data:
+                    packet_count += 1
+                    timeout_count = 0  # Reset timeout counter
+                    logger.debug(f"📥 Received UDP packet #{packet_count} ({len(data)} bytes) from {addr}")
                     await self._process_mavlink_data(data)
             except socket.timeout:
+                timeout_count += 1
+                # Log setiap 10 timeout (10 detik)
+                if timeout_count == 10:
+                    logger.warning(f"⚠️ No UDP data received for {timeout_count} seconds. Check MAVProxy --out parameter!")
+                    timeout_count = 0
                 continue
             except Exception as e:
-                logger.error(f"Socket error: {e}")
+                logger.error(f"❌ Socket error: {e}")
                 await asyncio.sleep(0.1)
     
     async def _process_mavlink_data(self, data: bytes):
         """Parse MAVLink messages dari UDP stream"""
         self.msg_buffer.extend(data)
+        logger.debug(f"📦 Buffer size: {len(self.msg_buffer)} bytes")
         
         # Parse all complete messages in buffer
+        msg_count = 0
         while len(self.msg_buffer) > 0:
             try:
                 msg = self.mavlink.parse_buffer(self.msg_buffer)
+                
+                # Handle different return types from parse_buffer()
                 if msg is None:
                     break
                 
-                await self._handle_mavlink_message(msg)
+                # pymavlink sometimes returns a list of messages
+                if isinstance(msg, list):
+                    logger.debug(f"📋 Got list of {len(msg)} messages")
+                    for single_msg in msg:
+                        if single_msg is not None:
+                            msg_count += 1
+                            logger.debug(f"✅ Parsed message: {single_msg.get_type()}")
+                            await self._handle_mavlink_message(single_msg)
+                # Handle single message
+                elif hasattr(msg, 'get_type'):
+                    msg_count += 1
+                    logger.debug(f"✅ Parsed message: {msg.get_type()}")
+                    await self._handle_mavlink_message(msg)
+                else:
+                    logger.warning(f"⚠️ Unknown message type: {type(msg)}")
+                    break
+                    
             except Exception as e:
-                logger.debug(f"Parse error: {e}")
+                logger.warning(f"⚠️ Parse error: {e}")
                 break
+        
+        if msg_count > 0:
+            logger.debug(f"🎯 Successfully parsed {msg_count} message(s)")
     
     async def _handle_mavlink_message(self, msg):
         """Handle specific MAVLink message types"""
-        msg_type = msg.get_type()
+        try:
+            msg_type = msg.get_type()
+        except Exception as e:
+            logger.error(f"❌ Cannot get message type: {e}, msg type: {type(msg)}")
+            return
         
         try:
             if msg_type == "GLOBAL_POSITION_INT":
                 # GPS dan altitude data
-                self.latest_gps = GPSData(
-                    latitude=msg.lat / 1e7,  # Convert from 1e-7 degrees
-                    longitude=msg.lon / 1e7,
-                    altitude_msl=msg.alt / 1000.0,  # Convert from mm to m
-                    altitude_relative=msg.relative_alt / 1000.0,
-                    satellite_count=0
-                )
-                logger.debug(f"📍 GPS: {self.latest_gps.latitude}, {self.latest_gps.longitude}")
+                try:
+                    self.latest_gps = GPSData(
+                        latitude=msg.lat / 1e7,  # Convert from 1e-7 degrees
+                        longitude=msg.lon / 1e7,
+                        altitude_msl=msg.alt / 1000.0,  # Convert from mm to m
+                        altitude_relative=msg.relative_alt / 1000.0,
+                        satellite_count=0
+                    )
+                    logger.info(f"📍 GPS: {self.latest_gps.latitude:.6f}, {self.latest_gps.longitude:.6f}, Alt: {self.latest_gps.altitude_relative:.1f}m")
+                except Exception as e:
+                    logger.error(f"❌ Error parsing GPS: {e}")
                 
             elif msg_type == "ATTITUDE":
                 # Attitude (roll, pitch, yaw)
-                self.latest_attitude = AttitudeData(
-                    roll=msg.roll,
-                    pitch=msg.pitch,
-                    yaw=msg.yaw
-                )
-                logger.debug(f"🔄 Attitude: R={msg.roll:.2f}, P={msg.pitch:.2f}, Y={msg.yaw:.2f}")
+                try:
+                    self.latest_attitude = AttitudeData(
+                        roll=msg.roll,
+                        pitch=msg.pitch,
+                        yaw=msg.yaw
+                    )
+                    logger.info(f"🔄 Attitude: R={msg.roll:.2f}°, P={msg.pitch:.2f}°, Y={msg.yaw:.2f}°")
+                except Exception as e:
+                    logger.error(f"❌ Error parsing Attitude: {e}")
                 
             elif msg_type == "VFR_HUD":
                 # Velocity dan speed data
-                ground_speed = msg.groundspeed
-                self.latest_velocity = VelocityData(
-                    x=ground_speed * 0.7071,  # Approximation
-                    y=ground_speed * 0.7071,
-                    z=-msg.climb,
-                    ground_speed=ground_speed
-                )
-                logger.debug(f"⚡ Speed: {ground_speed:.2f} m/s")
+                try:
+                    ground_speed = msg.groundspeed
+                    self.latest_velocity = VelocityData(
+                        x=ground_speed * 0.7071,  # Approximation
+                        y=ground_speed * 0.7071,
+                        z=-msg.climb,
+                        ground_speed=ground_speed
+                    )
+                    logger.info(f"⚡ Speed: {ground_speed:.2f} m/s, Climb: {msg.climb:.2f} m/s")
+                except Exception as e:
+                    logger.error(f"❌ Error parsing VFR_HUD: {e}")
                 
             elif msg_type == "BATTERY_STATUS":
                 # Battery status
-                voltage = msg.voltages[0] / 1000.0  # Convert from mV to V
-                current = msg.current_battery / 100.0 if msg.current_battery > 0 else None
-                
-                self.latest_battery = BatteryData(
-                    voltage_v=voltage,
-                    current_a=current,
-                    remaining_percent=msg.battery_remaining,
-                    health=None
-                )
-                logger.debug(f"🔋 Battery: {voltage:.2f}V, {msg.battery_remaining}%")
+                try:
+                    voltage = msg.voltages[0] / 1000.0  # Convert from mV to V
+                    current = msg.current_battery / 100.0 if msg.current_battery > 0 else None
+                    
+                    self.latest_battery = BatteryData(
+                        voltage_v=voltage,
+                        current_a=current,
+                        remaining_percent=msg.battery_remaining,
+                        health=None
+                    )
+                    logger.info(f"🔋 Battery: {voltage:.2f}V, {msg.battery_remaining}%, Current: {current}A")
+                except Exception as e:
+                    logger.error(f"❌ Error parsing Battery: {e}")
                 
             elif msg_type == "HEARTBEAT":
                 # Status & mode
-                base_mode = msg.base_mode
-                armed = (base_mode & 0x80) != 0  # Check armed bit
-                
-                mode_map = {
-                    0: "STABILIZE", 1: "ACRO", 2: "ALT_HOLD", 3: "AUTO",
-                    4: "GUIDED", 5: "LOITER", 6: "RTL", 7: "CIRCLE",
-                    8: "POSITION", 9: "LAND", 10: "OF_LOITER"
-                }
-                flight_mode = mode_map.get(msg.custom_mode, f"MODE_{msg.custom_mode}")
-                
-                self.latest_status = StatusData(
-                    armed=armed,
-                    flight_mode=flight_mode,
-                    in_air=armed,  # Simplified assumption
-                    is_connected=True
-                )
-                logger.debug(f"📡 Status: Armed={armed}, Mode={flight_mode}")
+                try:
+                    base_mode = msg.base_mode
+                    armed = (base_mode & 0x80) != 0  # Check armed bit
+                    
+                    mode_map = {
+                        0: "STABILIZE", 1: "ACRO", 2: "ALT_HOLD", 3: "AUTO",
+                        4: "GUIDED", 5: "LOITER", 6: "RTL", 7: "CIRCLE",
+                        8: "POSITION", 9: "LAND", 10: "OF_LOITER"
+                    }
+                    flight_mode = mode_map.get(msg.custom_mode, f"MODE_{msg.custom_mode}")
+                    
+                    self.latest_status = StatusData(
+                        armed=armed,
+                        flight_mode=flight_mode,
+                        in_air=armed,  # Simplified assumption
+                        is_connected=True
+                    )
+                    logger.info(f"📡 Status: Armed={armed}, Mode={flight_mode}")
+                except Exception as e:
+                    logger.error(f"❌ Error parsing HEARTBEAT: {e}")
                 
             elif msg_type == "GPS_RAW_INT":
                 # GPS satellites
-                self.latest_gps.satellite_count = msg.satellites_visible
-                logger.debug(f"🛰️ Satellites: {msg.satellites_visible}")
+                try:
+                    self.latest_gps.satellite_count = msg.satellites_visible
+                    logger.info(f"🛰️ Satellites: {msg.satellites_visible}")
+                except Exception as e:
+                    logger.error(f"❌ Error parsing GPS_RAW_INT: {e}")
+            else:
+                logger.debug(f"ℹ️ Received {msg_type} (not displayed)")
                 
         except Exception as e:
-            logger.debug(f"Error handling {msg_type}: {e}")
+            logger.error(f"❌ Unexpected error handling {msg_type}: {e}")
     
     def get_telemetry(self) -> PixhawkTelemetry:
         """Get current telemetry snapshot"""
@@ -431,14 +491,20 @@ class MAVLinkMQTTBridge:
             await asyncio.sleep(1)
             
             try:
+                publish_count = 0
                 while True:
                     try:
                         telemetry = self.mavlink.get_telemetry()
                         self.mqtt.publish_telemetry(telemetry)
                         self.mqtt.save_to_file(telemetry, self.output_file)
+                        
+                        publish_count += 1
+                        if publish_count % 5 == 0:  # Log setiap 5 publish (5 detik)
+                            logger.info(f"🎯 Published seq {telemetry.sequence} to MQTT (GPS: {telemetry.gps.latitude:.4f}, {telemetry.gps.longitude:.4f})")
+                        
                         await asyncio.sleep(self.publish_interval)
                     except Exception as e:
-                        logger.error(f"Publish loop error: {e}")
+                        logger.error(f"❌ Publish loop error: {e}")
                         await asyncio.sleep(1)
                         
             except KeyboardInterrupt:
@@ -459,6 +525,17 @@ class MAVLinkMQTTBridge:
 async def main():
     """Entry point"""
     import os
+    
+    # Log configuration
+    logger.info("=" * 80)
+    logger.info("🌉 MAVLink ↔ MQTT Bridge Configuration")
+    logger.info("=" * 80)
+    logger.info(f"📡 MAVLink Listen Port: {os.getenv('MAVLINK_LISTEN_PORT', '14551')}")
+    logger.info(f"🔗 MQTT Broker: {os.getenv('MQTT_BROKER', 'ef6ff411.ala.asia-southeast1.emqxsl.com')}:{os.getenv('MQTT_PORT', '8883')}")
+    logger.info(f"📝 MQTT Topic: {os.getenv('MQTT_TOPIC', 'uav/telemetry/crepes387')}")
+    logger.info(f"⏱️ Publish Interval: {os.getenv('PUBLISH_INTERVAL', '1.0')}s")
+    logger.info("=" * 80)
+    
     app = MAVLinkMQTTBridge()
     await app.run()
 
