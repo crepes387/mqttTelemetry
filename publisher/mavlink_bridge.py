@@ -482,7 +482,7 @@ class MAVLinkMQTTBridge:
         self.mqtt_username = os.getenv("MQTT_USERNAME", "user1")
         self.mqtt_password = os.getenv("MQTT_PASSWORD", "public1")
         self.mqtt_topic    = os.getenv("MQTT_TOPIC",    "uav/telemetry/crepes387")
-        self.publish_interval = float(os.getenv("PUBLISH_INTERVAL", "1.0"))
+        self.publish_interval = float(os.getenv("PUBLISH_INTERVAL", "0.1"))
 
         default_output = Path(__file__).resolve().parent.parent / "data" / "latest.json"
         self.output_file = Path(os.getenv("TELEMETRY_OUTPUT_FILE", str(default_output)))

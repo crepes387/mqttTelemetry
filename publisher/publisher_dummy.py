@@ -24,4 +24,4 @@ while True:
     client.publish("uav/telemetry/crepes387", json.dumps(payload))
     print(f"Published seq {seq}")
     seq += 1
-    time.sleep(0.5)
+    time.sleep(0.1)

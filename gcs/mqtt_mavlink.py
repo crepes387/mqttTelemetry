@@ -18,7 +18,7 @@ import paho.mqtt.client as mqtt
 from paho.mqtt.client import CallbackAPIVersion
 
 # Import pymavlink untuk create MAVLink messages
-from pymavlink.dialects.v10 import ardupilotmega as mavlink_module
+from pymavlink.dialects.v20 import ardupilotmega as mavlink_module  # MAVLink v2
 
 # Setup logging
 logging.basicConfig(
@@ -197,13 +197,15 @@ class MAVLinkServer:
     """
     
     def __init__(self, listen_port: int = 14550):
+        import io
         self.listen_port = listen_port
         self.server = None
         self.clients = set()
-        self.mavlink = mavlink_module.MAVLink(None)
-        # Set default IDs for the MAVLink object
-        self.mavlink.srcSystem = 1  # ✅ Set source system ID
-        self.mavlink.srcComponent = 1  # ✅ Set source component ID
+        # ✅ FIX: Gunakan io.BytesIO agar pack() increment sequence dengan benar (MAVLink v2)
+        self._mav_buf = io.BytesIO()
+        self.mavlink = mavlink_module.MAVLink(self._mav_buf)
+        self.mavlink.srcSystem = 1
+        self.mavlink.srcComponent = 1
         self.system_id = 1
         self.component_id = 1
         self.sequence = 0
@@ -228,13 +230,27 @@ class MAVLinkServer:
         addr = writer.get_extra_info('peername')
         logger.info(f"📱 Client connected: {addr} (Total: {len(self.clients) + 1})")
         self.clients.add((reader, writer))
-        
+
+        # Kirim heartbeat segera + param list supaya MP tidak stuck
+        await self._send_initial_heartbeat(writer, addr)
+        await self._send_param_list(writer, addr)
+
         try:
-            # Send initial messages to new client
-            logger.debug(f"📤 Waiting to send telemetry to new client...")
             while True:
-                # Keep connection open
-                await asyncio.sleep(1)
+                try:
+                    data = await asyncio.wait_for(reader.read(4096), timeout=5.0)
+                    if not data:
+                        logger.info(f"📱 Client {addr} closed connection (EOF)")
+                        break
+                    logger.debug(f"📥 Received {len(data)} bytes from {addr}")
+                    await self._handle_incoming_mavlink(data, writer, addr)
+                except asyncio.TimeoutError:
+                    pass
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"⚠️ Read error from {addr}: {e}")
+                    break
         except asyncio.CancelledError:
             logger.debug("Client handler cancelled")
         except Exception as e:
@@ -248,86 +264,243 @@ class MAVLinkServer:
                 pass
             logger.info(f"📱 Client disconnected: {addr} (Remaining: {len(self.clients)})")
     
-    async def broadcast_telemetry(self, telemetry: PixhawkTelemetry):
-        """Convert telemetry to MAVLink messages dan broadcast"""
-        
+
+    async def _send_initial_heartbeat(self, writer, addr):
+        """Kirim heartbeat segera saat client connect."""
         try:
-            # Create MAVLink messages
+            msg = self.mavlink.heartbeat_encode(
+                type=2, autopilot=4, base_mode=0x01, custom_mode=4, system_status=3
+            )
+            writer.write(msg.pack(self.mavlink))
+            await writer.drain()
+            logger.info(f"💓 Sent initial HEARTBEAT to {addr}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to send initial heartbeat: {e}")
+
+    # Minimal params agar Mission Planner tidak stuck di "Getting params"
+    FAKE_PARAMS = [
+        ("SYSID_THISMAV",   1.0,  mavlink_module.MAV_PARAM_TYPE_INT32),
+        ("SYSID_MYGCS",   255.0,  mavlink_module.MAV_PARAM_TYPE_INT32),
+        ("ARMING_CHECK",    1.0,  mavlink_module.MAV_PARAM_TYPE_INT32),
+        ("BRD_TYPE",        0.0,  mavlink_module.MAV_PARAM_TYPE_INT32),
+        ("FRAME_CLASS",     1.0,  mavlink_module.MAV_PARAM_TYPE_INT32),
+        ("FRAME_TYPE",      1.0,  mavlink_module.MAV_PARAM_TYPE_INT32),
+        ("FS_THR_ENABLE",   1.0,  mavlink_module.MAV_PARAM_TYPE_INT32),
+        ("BATT_MONITOR",    4.0,  mavlink_module.MAV_PARAM_TYPE_INT32),
+        ("GPS_TYPE",        1.0,  mavlink_module.MAV_PARAM_TYPE_INT32),
+        ("INS_ENABLE_MASK", 1.0,  mavlink_module.MAV_PARAM_TYPE_INT32),
+    ]
+
+    async def _send_param_list(self, writer, addr):
+        """Balas PARAM_REQUEST_LIST — inilah yang bikin MP stuck kalau tidak dibalas."""
+        logger.info(f"📋 Sending {len(self.FAKE_PARAMS)} params to {addr}")
+        total = len(self.FAKE_PARAMS)
+        for idx, (name, value, ptype) in enumerate(self.FAKE_PARAMS):
+            try:
+                msg = self.mavlink.param_value_encode(
+                    param_id=name.encode().ljust(16, b"\x00")[:16],
+                    param_value=value,
+                    param_type=ptype,
+                    param_count=total,
+                    param_index=idx
+                )
+                writer.write(msg.pack(self.mavlink))
+            except Exception as e:
+                logger.warning(f"⚠️ param encode error ({name}): {e}")
+        try:
+            await writer.drain()
+            logger.info(f"✅ Param list sent ({total} params) to {addr}")
+        except Exception as e:
+            logger.warning(f"⚠️ drain error after param list: {e}")
+
+    async def _handle_incoming_mavlink(self, data: bytes, writer, addr):
+        """Parse MAVLink frames dari Mission Planner dan balas request yang perlu."""
+        try:
+            parser = mavlink_module.MAVLink(None)
+            parser.robust_parsing = True
+            msgs = parser.parse_buffer(data)
+            if not msgs:
+                return
+            for msg in msgs:
+                mtype = msg.get_type()
+                logger.debug(f"📨 MP→GCS: {mtype}")
+
+                if mtype == "PARAM_REQUEST_LIST":
+                    logger.info("📋 MP sent PARAM_REQUEST_LIST → replying")
+                    await self._send_param_list(writer, addr)
+
+                elif mtype == "PARAM_REQUEST_READ":
+                    raw_id = msg.param_id
+                    if isinstance(raw_id, bytes):
+                        name = raw_id.rstrip(b"\x00").decode("utf-8", errors="ignore")
+                    else:
+                        name = str(raw_id).strip("\x00")
+                    val = next((v for n, v, t in self.FAKE_PARAMS if n == name), 0.0)
+                    ptype = next((t for n, v, t in self.FAKE_PARAMS if n == name),
+                                 mavlink_module.MAV_PARAM_TYPE_REAL32)
+                    try:
+                        reply = self.mavlink.param_value_encode(
+                            param_id=name.encode().ljust(16, b"\x00")[:16],
+                            param_value=val, param_type=ptype,
+                            param_count=len(self.FAKE_PARAMS), param_index=0
+                        )
+                        writer.write(reply.pack(self.mavlink))
+                        await writer.drain()
+                        logger.debug(f"📤 Replied param {name}={val}")
+                    except Exception as e:
+                        logger.warning(f"param_request_read reply error: {e}")
+
+                elif mtype == "REQUEST_DATA_STREAM":
+                    try:
+                        ack = self.mavlink.data_stream_encode(
+                            stream_id=msg.req_stream_id,
+                            message_rate=msg.req_message_rate,
+                            on_off=msg.start_stop
+                        )
+                        writer.write(ack.pack(self.mavlink))
+                        await writer.drain()
+                        logger.debug(f"📤 ACK data_stream {msg.req_stream_id}")
+                    except Exception as e:
+                        logger.debug(f"data_stream ack skipped: {e}")
+
+                elif mtype == "HEARTBEAT":
+                    logger.debug(f"💓 HB from MP sysid={msg.get_srcSystem()}")
+
+        except Exception as e:
+            logger.debug(f"MAVLink parse warning (non-fatal): {e}")
+
+    def _build_packets(self, telemetry: PixhawkTelemetry) -> bytes:
+        """
+        Build semua MAVLink packets ke dalam satu buffer bytes.
+        Menggunakan io.BytesIO agar sequence number auto-increment dengan benar.
+        """
+        import io, math
+        buf = io.BytesIO()
+        mav = mavlink_module.MAVLink(buf)
+        mav.srcSystem = self.system_id
+        mav.srcComponent = self.component_id
+
+        # --- HEARTBEAT ---
+        base_mode = (0x80 | 0x01) if telemetry.status.armed else 0x01
+        mode_map = {
+            "STABILIZE":0,"ACRO":1,"ALT_HOLD":2,"AUTO":3,"GUIDED":4,
+            "LOITER":5,"RTL":6,"CIRCLE":7,"POSITION":8,"LAND":9
+        }
+        custom_mode = mode_map.get(telemetry.status.flight_mode, 4)
+        mav.heartbeat_send(
+            type=1, autopilot=3,
+            base_mode=base_mode,
+            custom_mode=custom_mode,
+            system_status=4 if telemetry.status.in_air else 3,
+            mavlink_version=3
+        )
+
+        # --- ATTITUDE (radian!) ---
+        mav.attitude_send(
+            time_boot_ms=self.sequence * 100,
+            roll=telemetry.attitude.roll,
+            pitch=telemetry.attitude.pitch,
+            yaw=telemetry.attitude.yaw,
+            rollspeed=0.0, pitchspeed=0.0, yawspeed=0.0
+        )
+
+        # --- GLOBAL_POSITION_INT ---
+
+        yaw_deg = math.degrees(telemetry.attitude.yaw)
+        hdg_cd = yaw_deg % 360
+        if hdg_cd < 0: hdg_cd += 360
+        hdg_cd = int(hdg_cd * 100)  # centidegrees
+
+        mav.global_position_int_send(
+            time_boot_ms=self.sequence * 100,
+            lat=int(telemetry.gps.latitude * 1e7),
+            lon=int(telemetry.gps.longitude * 1e7),
+            alt=int(telemetry.gps.altitude_msl * 1000),
+            relative_alt=int(telemetry.gps.altitude_relative * 1000),
+            vx=int(telemetry.velocity.x * 100),
+            vy=int(telemetry.velocity.y * 100),
+            vz=int(telemetry.velocity.z * 100),
+            hdg=hdg_cd
+        )
+
+        # --- GPS_RAW_INT (wajib untuk GPS status bar di MP) ---
+        gps_fix = 3 if telemetry.gps.satellite_count >= 6 else (1 if telemetry.gps.satellite_count > 0 else 0)
+        mav.gps_raw_int_send(
+            time_usec=0,
+            fix_type=gps_fix,
+            lat=int(telemetry.gps.latitude * 1e7),
+            lon=int(telemetry.gps.longitude * 1e7),
+            alt=int(telemetry.gps.altitude_msl * 1000),
+            eph=65535, epv=65535,
+            vel=int(telemetry.velocity.ground_speed * 100),
+            cog=hdg_cd,
+            satellites_visible=telemetry.gps.satellite_count
+        )
+
+        # --- SYS_STATUS (battery untuk HUD) ---
+        sensors = 0x1 | 0x2 | 0x4 | 0x20 | 0x40000
+        current_ca = int(telemetry.battery.current_a * 100) if telemetry.battery.current_a is not None else -1
+        mav.sys_status_send(
+            onboard_control_sensors_present=sensors,
+            onboard_control_sensors_enabled=sensors,
+            onboard_control_sensors_health=sensors,
+            load=0,
+            voltage_battery=int(telemetry.battery.voltage_v * 1000),
+            current_battery=current_ca,
+            battery_remaining=int(telemetry.battery.remaining_percent),
+            drop_rate_comm=0, errors_comm=0,
+            errors_count1=0, errors_count2=0, errors_count3=0, errors_count4=0
+        )
+
+        # --- BATTERY_STATUS ---
+        mav.battery_status_send(
+            id=0, battery_function=0, type=4,
+            temperature=32767,
+            voltages=[int(telemetry.battery.voltage_v * 1000)] + [65535]*9,
+            current_battery=current_ca,
+            current_consumed=-1, energy_consumed=-1,
+            battery_remaining=int(telemetry.battery.remaining_percent)
+        )
+
+        # --- VFR_HUD ---
+        heading_deg = int(telemetry.attitude.yaw % 360)
+        if heading_deg < 0: heading_deg += 360
+        mav.vfr_hud_send(
+            airspeed=float(telemetry.velocity.ground_speed),
+            groundspeed=float(telemetry.velocity.ground_speed),
+            heading=heading_deg,
+            throttle=0,
+            alt=float(telemetry.gps.altitude_relative),
+            climb=float(-telemetry.velocity.z)
+        )
+
+        buf.seek(0)
+        return buf.read()
+
+    async def broadcast_telemetry(self, telemetry: PixhawkTelemetry):
+        """Convert telemetry to MAVLink packets dan broadcast ke semua clients"""
+        try:
             self.sequence = (self.sequence + 1) % 256
-            messages = []
-            
-            # HEARTBEAT - critical untuk Mission Planner
-            try:
-                msg = self._create_heartbeat(telemetry)
-                messages.append(("HEARTBEAT", msg))
-            except Exception as e:
-                logger.error(f"❌ Failed to create HEARTBEAT: {e}", exc_info=True)
-            
-            # GLOBAL_POSITION_INT - GPS
-            try:
-                msg = self._create_global_position_int(telemetry)
-                messages.append(("GLOBAL_POSITION_INT", msg))
-            except Exception as e:
-                logger.error(f"❌ Failed to create GLOBAL_POSITION_INT: {e}", exc_info=True)
-            
-            # ATTITUDE
-            try:
-                msg = self._create_attitude(telemetry)
-                messages.append(("ATTITUDE", msg))
-            except Exception as e:
-                logger.error(f"❌ Failed to create ATTITUDE: {e}", exc_info=True)
-            
-            # VFR_HUD
-            try:
-                msg = self._create_vfr_hud(telemetry)
-                messages.append(("VFR_HUD", msg))
-            except Exception as e:
-                logger.error(f"❌ Failed to create VFR_HUD: {e}", exc_info=True)
-            
-            # BATTERY_STATUS
-            try:
-                msg = self._create_battery_status(telemetry)
-                messages.append(("BATTERY_STATUS", msg))
-            except Exception as e:
-                logger.error(f"❌ Failed to create BATTERY_STATUS: {e}", exc_info=True)
-            
-            # SYS_STATUS
-            try:
-                msg = self._create_sys_status(telemetry)
-                messages.append(("SYS_STATUS", msg))
-            except Exception as e:
-                logger.error(f"❌ Failed to create SYS_STATUS: {e}", exc_info=True)
-            
-            logger.debug(f"📦 Created {len(messages)} MAVLink messages")
-            
-            # Send ke semua connected clients
+            packet_data = self._build_packets(telemetry)
+            logger.debug(f"📦 Built {len(packet_data)} bytes MAVLink data (7 messages)")
+
             dead_clients = []
-            if len(self.clients) > 0:
-                for reader, writer in self.clients:
-                    for msg_type, msg in messages:
-                        try:
-                            # ✅ PERBAIKAN: Gunakan msg.pack(self.mavlink) untuk mengonversi menjadi bytes packet yang valid
-                            packet = msg.pack(self.mavlink)
-            
-                            # Ensure we have a valid packet
-                            if packet and len(packet) > 0:
-                                writer.write(packet)
-                                await writer.drain()
-                                logger.debug(f"📤 Sent {msg_type} ({len(packet)} bytes)")
-                            else:
-                                logger.warning(f"⚠️ Empty packet for {msg_type}")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Failed to send {msg_type} to client: {e}")
-                            dead_clients.append((reader, writer))
-                            break  # Break inner loop to close connection
+            current_clients = set(self.clients)
+            if current_clients:
+                for reader, writer in current_clients:
+                    try:
+                        writer.write(packet_data)
+                        await writer.drain()
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to send to client: {e}")
+                        dead_clients.append((reader, writer))
             else:
                 logger.debug("⏸️ No clients connected, messages not sent")
-            
-            # Remove dead clients
+
             for client in dead_clients:
                 self.clients.discard(client)
-                logger.warning(f"⚠️ Removed dead client")
-                
+                logger.warning("⚠️ Removed dead client")
+
         except Exception as e:
             logger.error(f"❌ Unexpected error in broadcast_telemetry: {e}", exc_info=True)
     
@@ -366,12 +539,14 @@ class MAVLinkServer:
             vx=int(telemetry.velocity.x * 100),  # cm/s
             vy=int(telemetry.velocity.y * 100),
             vz=int(telemetry.velocity.z * 100),
-            hdg=int(telemetry.attitude.yaw * 100)  # centidegrees
+            hdg=int((telemetry.attitude.yaw % 360) * 100) if telemetry.attitude.yaw >= 0 else int(((telemetry.attitude.yaw % 360) + 360) * 100)  # centidegrees 0-35999
         )
         return msg
     
     def _create_attitude(self, telemetry: PixhawkTelemetry):
-        """ATTITUDE message"""
+        """ATTITUDE message — roll/pitch/yaw dalam RADIAN (MAVLink spec)"""
+        import math
+        # MAVSDK/Pixhawk mengirim derajat, MAVLink ATTITUDE butuh radian
         msg = self.mavlink.attitude_encode(
             time_boot_ms=int(self.sequence * 100),
             roll=telemetry.attitude.roll,
@@ -385,42 +560,61 @@ class MAVLinkServer:
     
     def _create_vfr_hud(self, telemetry: PixhawkTelemetry):
         """VFR_HUD message"""
+        # Heading harus 0-359 (yaw bisa -180~180 → normalize ke 0~360)
+        heading = int(telemetry.attitude.yaw % 360)
+        if heading < 0:
+            heading += 360
+        # NED convention: vz positif = turun, climb di MP = positif naik → invert
+        climb = -telemetry.velocity.z
         msg = self.mavlink.vfr_hud_encode(
-            airspeed=telemetry.velocity.ground_speed,
-            groundspeed=telemetry.velocity.ground_speed,
-            heading=int(telemetry.attitude.yaw),
-            throttle=0,  # Unknown
-            alt=telemetry.gps.altitude_relative,
-            climb=telemetry.velocity.z
+            airspeed=float(telemetry.velocity.ground_speed),
+            groundspeed=float(telemetry.velocity.ground_speed),
+            heading=heading,
+            throttle=0,
+            alt=float(telemetry.gps.altitude_relative),
+            climb=float(climb)
         )
         return msg
     
     def _create_battery_status(self, telemetry: PixhawkTelemetry):
         """BATTERY_STATUS message"""
-        current_ma = int((telemetry.battery.current_a or 0) * 100)  # centiamps
-        
+        # current_battery: centiamps, -1 = unknown (jangan 0 karena 0 = valid)
+        if telemetry.battery.current_a is not None:
+            current_ca = int(telemetry.battery.current_a * 100)
+        else:
+            current_ca = -1
+        # voltages: per-cell mV, cell tidak dipakai diisi 65535 (UINT16_MAX = invalid)
+        voltage_mv = int(telemetry.battery.voltage_v * 1000)
         msg = self.mavlink.battery_status_encode(
             id=0,
-            battery_function=0,  # BATTERY_FUNCTION_UNKNOWN
-            type=4,  # BATTERY_TYPE_LIPO
-            temperature=0,  # Unknown
-            voltages=[int(telemetry.battery.voltage_v * 1000)] + [65535] * 9,  # mV
-            current_battery=current_ma,
-            current_consumed=0,
-            energy_consumed=0,
+            battery_function=0,       # BATTERY_FUNCTION_UNKNOWN
+            type=4,                    # BATTERY_TYPE_LIPO
+            temperature=32767,         # INT16_MAX = tidak tersedia (bukan 0°C)
+            voltages=[voltage_mv] + [65535] * 9,
+            current_battery=current_ca,
+            current_consumed=-1,       # -1 = unknown
+            energy_consumed=-1,        # -1 = unknown
             battery_remaining=int(telemetry.battery.remaining_percent)
         )
         return msg
     
     def _create_sys_status(self, telemetry: PixhawkTelemetry):
         """SYS_STATUS message"""
+        # Sensor bitmask realistis untuk ArduCopter dengan GPS
+        # MAV_SYS_STATUS_SENSOR: 3DGYRO|3DACCEL|3DMAG|GPS|AHRS
+        sensors = (0x1 | 0x2 | 0x4 | 0x20 | 0x40000)
+        # current_battery: centiamps (cA), -1 jika tidak tersedia
+        if telemetry.battery.current_a is not None:
+            current_ca = int(telemetry.battery.current_a * 100)
+        else:
+            current_ca = -1
         msg = self.mavlink.sys_status_encode(
-            onboard_control_sensors_present=65535,
-            onboard_control_sensors_enabled=65535,
-            onboard_control_sensors_health=65535,
+            onboard_control_sensors_present=sensors,
+            onboard_control_sensors_enabled=sensors,
+            onboard_control_sensors_health=sensors,
             load=0,
             voltage_battery=int(telemetry.battery.voltage_v * 1000),  # mV
-            current_battery=int((telemetry.battery.current_a or 0) * 100),  # cA
+            current_battery=current_ca,                                # cA
             battery_remaining=int(telemetry.battery.remaining_percent),
             drop_rate_comm=0,
             errors_comm=0,
